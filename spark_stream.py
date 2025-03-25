@@ -107,28 +107,27 @@ def get_kafka_stream(spark: SparkSession, bootstrap_servers: str, topic: str):
 def get_transaction_schema() -> StructType:
     """Définit le schéma des transactions"""
     return StructType([
-        StructField("transaction_id", StringType(), False),
-        StructField("account_id", StringType(), False),
-        StructField("transaction_amount", DoubleType(), False),
-        StructField("transaction_date", TimestampType(), False),
-        StructField("transaction_type", StringType(), False),
+        StructField("transactionid", StringType(), False),  # Changed from transaction_id
+        StructField("accountid", StringType(), False),      # Changed from account_id
+        StructField("transactionamount", DoubleType(), False),
+        StructField("transactiondate", TimestampType(), False),
+        StructField("transactiontype", StringType(), False),
         StructField("location", StringType(), False),
-        StructField("device_id", StringType(), False),
-        StructField("ip_address", StringType(), False),
-        StructField("merchant_id", StringType(), False),
-        StructField("account_balance", DoubleType(), False),
-        StructField("previous_transaction_date", TimestampType(), False),
+        StructField("deviceid", StringType(), False),
+        StructField("ipaddress", StringType(), False),
+        StructField("merchantid", StringType(), False),
+        StructField("accountbalance", DoubleType(), False),
+        StructField("previoustransactiondate", TimestampType(), False),
         StructField("channel", StringType(), False),
-        StructField("customer_age", IntegerType(), False),
-        StructField("customer_occupation", StringType(), False),
-        StructField("transaction_duration", IntegerType(), False),
-        StructField("login_attempts", IntegerType(), False),
-        StructField("first_name", StringType(), False),
-        StructField("last_name", StringType(), False),
+        StructField("customerage", IntegerType(), False),
+        StructField("customeroccupation", StringType(), False),
+        StructField("transactionduration", IntegerType(), False),
+        StructField("loginattempts", IntegerType(), False),
+        StructField("firstname", StringType(), False),
+        StructField("lastname", StringType(), False),
         StructField("gender", StringType(), False),
         StructField("picture", StringType(), False)
     ])
-
 def process_stream(kafka_df, schema: StructType, spring_connector: SpringBootConnector):
     """Traite le stream et envoie les données avec gestion des erreurs"""
     transactions_df = kafka_df \

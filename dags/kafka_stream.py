@@ -49,26 +49,26 @@ def format_data(transaction, random_user_data):
     """
     data = {
         # Données de transaction bancaire (nécessaires pour le modèle)
-        "transaction_id": transaction["TransactionID"],
-        "account_id": transaction["AccountID"],
-        "transaction_amount": float(transaction["TransactionAmount"]),
-        "transaction_date": transaction["TransactionDate"],
-        "transaction_type": transaction["TransactionType"],
+        "transactionid": transaction["TransactionID"],
+        "accountid": transaction["AccountID"],
+        "transactionamount": float(transaction["TransactionAmount"]),
+        "transactiondate": transaction["TransactionDate"],
+        "transactiontype": transaction["TransactionType"],
         "location": transaction["Location"],
-        "device_id": transaction["DeviceID"],
-        "ip_address": transaction["IP Address"],
-        "merchant_id": transaction["MerchantID"],
-        "account_balance": float(transaction["AccountBalance"]),
-        "previous_transaction_date": transaction["PreviousTransactionDate"],
+        "deviceid": transaction["DeviceID"],
+        "ipaddress": transaction["IP Address"],
+        "merchantid": transaction["MerchantID"],
+        "accountbalance": float(transaction["AccountBalance"]),
+        "previoustransactiondate": transaction["PreviousTransactionDate"],
         "channel": transaction["Channel"],
-        "customer_age": int(transaction["CustomerAge"]),
-        "customer_occupation": transaction["CustomerOccupation"],
-        "transaction_duration": int(transaction["TransactionDuration"]),
-        "login_attempts": int(transaction["LoginAttempts"]),
+        "customerage": int(transaction["CustomerAge"]),
+        "customeroccupation": transaction["CustomerOccupation"],
+        "transactionduration": int(transaction["TransactionDuration"]),
+        "loginattempts": int(transaction["LoginAttempts"]),
 
         # Données supplémentaires de l'API Random User (optionnelles)
-        "first_name": random_user_data["name"]["first"],
-        "last_name": random_user_data["name"]["last"],
+        "firstname": random_user_data["name"]["first"],
+        "lastname": random_user_data["name"]["last"],
         "gender": random_user_data["gender"],
         "picture": random_user_data["picture"]["large"]
     }
