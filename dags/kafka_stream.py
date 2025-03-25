@@ -1,69 +1,106 @@
+import csv
+import json
+import logging
+import time
 import uuid
 from datetime import datetime
+
+import requests
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from kafka import KafkaProducer
+
+# Configuration du logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[logging.StreamHandler()]
+)
 
 default_args = {
-    'owner': 'airscholar',
+    'owner': 'wahhab',
     'start_date': datetime(2023, 9, 3, 10, 00)
 }
 
-def get_data():
-    import requests
-
+def get_random_user_data():
+    """
+    Récupère des données supplémentaires depuis l'API Random User.
+    """
     res = requests.get("https://randomuser.me/api/")
     res = res.json()
     res = res['results'][0]
-
     return res
 
-def format_data(res):
+def get_bank_transactions():
     """
-    Formate les données récupérées depuis l'API Random User.
+    Lit les transactions bancaires depuis un fichier CSV.
+    """
+    file_path = "/opt/airflow/dataset/bank_transactions.csv"  # Chemin vers le fichier CSV
+    transactions = []
+    with open(file_path, mode='r') as file:
+        reader = csv.DictReader(file)
+        for row in reader:
+            transactions.append(row)
+    return transactions
+
+def format_data(transaction, random_user_data):
+    """
+    Combine les données de transactions bancaires avec les données de l'API Random User.
     """
     data = {
-        "id": str(uuid.uuid4()),  # Convertir UUID en chaîne de caractères
-        "first_name": res["name"]["first"],
-        "last_name": res["name"]["last"],
-        "gender": res["gender"],
-        "address": f"{res['location']['street']['number']} {res['location']['street']['name']}",
-        "post_code": res["location"]["postcode"],
-        "email": res["email"],
-        "username": res["login"]["username"],
-        "dob": res["dob"]["date"],
-        "registered_date": res["registered"]["date"],
-        "phone": res["phone"],
-        "picture": res["picture"]["large"]
+        # Données de transaction bancaire (nécessaires pour le modèle)
+        "transaction_id": transaction["TransactionID"],
+        "account_id": transaction["AccountID"],
+        "transaction_amount": float(transaction["TransactionAmount"]),
+        "transaction_date": transaction["TransactionDate"],
+        "transaction_type": transaction["TransactionType"],
+        "location": transaction["Location"],
+        "device_id": transaction["DeviceID"],
+        "ip_address": transaction["IP Address"],
+        "merchant_id": transaction["MerchantID"],
+        "account_balance": float(transaction["AccountBalance"]),
+        "previous_transaction_date": transaction["PreviousTransactionDate"],
+        "channel": transaction["Channel"],
+        "customer_age": int(transaction["CustomerAge"]),
+        "customer_occupation": transaction["CustomerOccupation"],
+        "transaction_duration": int(transaction["TransactionDuration"]),
+        "login_attempts": int(transaction["LoginAttempts"]),
+
+        # Données supplémentaires de l'API Random User (optionnelles)
+        "first_name": random_user_data["name"]["first"],
+        "last_name": random_user_data["name"]["last"],
+        "gender": random_user_data["gender"],
+        "picture": random_user_data["picture"]["large"]
     }
     return data
 
 def stream_data():
-    import json
-    from kafka import KafkaProducer
-    import time
-    import logging
-
+    """
+    Envoie les transactions bancaires combinées avec les données de l'API Random User à Kafka.
+    """
     producer = KafkaProducer(bootstrap_servers=['broker:29092'], max_block_ms=5000)
+    transactions = get_bank_transactions()
     curr_time = time.time()
 
-    while True:
+    for transaction in transactions:
         if time.time() > curr_time + 60:  # 1 minute
             break
         try:
-            res = get_data()
-            res = format_data(res)  # Utilise la fonction format_data
-            logging.info(f"Data to send: {res}")
-            producer.send('users_created', json.dumps(res).encode('utf-8'))
+            random_user_data = get_random_user_data()  # Récupère des données supplémentaires
+            formatted_data = format_data(transaction, random_user_data)  # Combine les données
+            logging.info(f"Data to send: {formatted_data}")
+            producer.send('bank_transactions', json.dumps(formatted_data).encode('utf-8'))
+            time.sleep(1)  # Simuler un délai entre les transactions
         except Exception as e:
             logging.error(f'An error occurred: {e}')
             continue
 
-with DAG('user_automation',
+with DAG('bank_transaction_automation',
          default_args=default_args,
          schedule='@daily',
          catchup=False) as dag:
 
     streaming_task = PythonOperator(
-        task_id='stream_data_from_api',
+        task_id='stream_bank_transactions',
         python_callable=stream_data
     )

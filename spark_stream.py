@@ -1,149 +1,219 @@
+import json
 import logging
-from cassandra.cluster import Cluster
+import os
+from datetime import datetime
+from typing import List, Dict, Any
+
+import requests
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import from_json, col
-from pyspark.sql.types import StructType, StructField, StringType
+from pyspark.sql.types import StructType, StructField, StringType, DoubleType, TimestampType, IntegerType
 
-# Configuration du logging
+# Configuration améliorée du logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[logging.StreamHandler()]
 )
-
-def create_keyspace(session):
-    try:
-        session.execute("""
-            CREATE KEYSPACE IF NOT EXISTS spark_streams
-            WITH replication = {'class': 'SimpleStrategy', 'replication_factor': '1'};
-        """)
-        logging.info("Keyspace créé avec succès")
-    except Exception as e:
-        logging.error(f"Erreur lors de la création du keyspace: {e}")
-        raise
-
-def create_table(session):
-    try:
-        session.execute("""
-            CREATE TABLE IF NOT EXISTS spark_streams.created_users (
-                id UUID PRIMARY KEY,
-                first_name TEXT,
-                last_name TEXT,
-                gender TEXT,
-                address TEXT,
-                post_code TEXT,
-                email TEXT,
-                username TEXT,
-                dob TEXT,
-                registered_date TEXT,
-                phone TEXT,
-                picture TEXT
-            );
-        """)
-        logging.info("Table créée avec succès")
-    except Exception as e:
-        logging.error(f"Erreur lors de la création de la table: {e}")
-        raise
+logger = logging.getLogger(__name__)
 
 def create_spark_connection():
+    """
+    Crée et retourne une session Spark avec une configuration robuste.
+    """
     try:
         spark = SparkSession.builder \
             .appName("KafkaCassandraIntegration") \
+            .master("local[*]") \
             .config("spark.jars.packages", 
                     "com.datastax.spark:spark-cassandra-connector_2.12:3.4.0,"
                     "org.apache.spark:spark-sql-kafka-0-10_2.12:3.4.0") \
             .config("spark.cassandra.connection.host", "localhost") \
             .config("spark.sql.streaming.forceDeleteTempCheckpointLocation", "true") \
+            .config("spark.driver.extraJavaOptions", "-Djava.security.manager=allow") \
+            .config("spark.driver.host", "localhost") \
+            .config("spark.driver.bindAddress", "127.0.0.1") \
+            .config("spark.network.timeout", "600s") \
+            .config("spark.executor.heartbeatInterval", "300s") \
+            .config("spark.ui.enabled", "false") \
+            .config("spark.sql.shuffle.partitions", "1") \
             .getOrCreate()
         
         spark.sparkContext.setLogLevel("WARN")
-        logging.info("Connexion Spark établie")
+        logger.info("Connexion Spark établie avec succès")
         return spark
     except Exception as e:
-        logging.error(f"Échec de la connexion Spark: {e}")
+        logger.error(f"Échec de la création de la session Spark: {e}", exc_info=True)
         return None
 
-def connect_to_kafka(spark):
+class SpringBootConnector:
+    """Gère la connexion à l'API Spring Boot avec gestion des erreurs améliorée"""
+    def __init__(self, spring_boot_url: str):
+        self.spring_boot_url = spring_boot_url
+        self.headers = {'Content-Type': 'application/json'}
+        self.session = requests.Session()
+        self.timeout = 30  # timeout en secondes
+    
+    def send_transactions(self, transactions: List[Dict[str, Any]]) -> bool:
+        """Envoie les transactions à Spring Boot avec gestion robuste des erreurs"""
+        if not transactions:
+            logger.warning("Aucune transaction à envoyer")
+            return False
+            
+        try:
+            # Conversion des dates en format ISO
+            formatted_transactions = []
+            for transaction in transactions:
+                formatted = {
+                    k: v.isoformat() if isinstance(v, datetime) else v
+                    for k, v in transaction.items()
+                }
+                formatted_transactions.append(formatted)
+            
+            response = self.session.post(
+                self.spring_boot_url,
+                json=formatted_transactions,
+                headers=self.headers,
+                timeout=self.timeout
+            )
+            
+            response.raise_for_status()
+            logger.info(f"Successfully sent {len(transactions)} transactions")
+            return True
+            
+        except requests.exceptions.RequestException as e:
+            logger.error(f"Erreur de requête vers l'API Spring Boot: {str(e)}")
+            return False
+        except Exception as e:
+            logger.error(f"Erreur inattendue lors de l'envoi des transactions: {str(e)}", exc_info=True)
+            return False
+
+def get_kafka_stream(spark: SparkSession, bootstrap_servers: str, topic: str):
+    """Crée un stream Kafka avec gestion des erreurs"""
     try:
-        df = spark.readStream \
+        logger.info(f"Connexion à Kafka: {bootstrap_servers}, topic: {topic}")
+        return spark.readStream \
             .format("kafka") \
-            .option("kafka.bootstrap.servers", "localhost:9092") \
-            .option("subscribe", "users_created") \
+            .option("kafka.bootstrap.servers", bootstrap_servers) \
+            .option("subscribe", topic) \
             .option("startingOffsets", "earliest") \
             .option("failOnDataLoss", "false") \
+            .option("maxOffsetsPerTrigger", 1000) \
             .load()
-        
-        logging.info("Connexion Kafka réussie")
-        return df
     except Exception as e:
-        logging.error(f"Échec de la connexion Kafka: {e}")
-        return None
+        logger.error(f"Échec de création du stream Kafka: {str(e)}", exc_info=True)
+        raise
 
-def create_cassandra_connection():
-    try:
-        cluster = Cluster(["localhost"])
-        session = cluster.connect()
-        logging.info("Connexion Cassandra établie")
-        return session
-    except Exception as e:
-        logging.error(f"Échec de la connexion Cassandra: {e}")
-        return None
-
-def create_selection_df(spark_df):
-    schema = StructType([
-        StructField("id", StringType(), False),
+def get_transaction_schema() -> StructType:
+    """Définit le schéma des transactions"""
+    return StructType([
+        StructField("transaction_id", StringType(), False),
+        StructField("account_id", StringType(), False),
+        StructField("transaction_amount", DoubleType(), False),
+        StructField("transaction_date", TimestampType(), False),
+        StructField("transaction_type", StringType(), False),
+        StructField("location", StringType(), False),
+        StructField("device_id", StringType(), False),
+        StructField("ip_address", StringType(), False),
+        StructField("merchant_id", StringType(), False),
+        StructField("account_balance", DoubleType(), False),
+        StructField("previous_transaction_date", TimestampType(), False),
+        StructField("channel", StringType(), False),
+        StructField("customer_age", IntegerType(), False),
+        StructField("customer_occupation", StringType(), False),
+        StructField("transaction_duration", IntegerType(), False),
+        StructField("login_attempts", IntegerType(), False),
         StructField("first_name", StringType(), False),
         StructField("last_name", StringType(), False),
         StructField("gender", StringType(), False),
-        StructField("address", StringType(), False),
-        StructField("post_code", StringType(), False),
-        StructField("email", StringType(), False),
-        StructField("username", StringType(), False),
-        StructField("dob", StringType(), False),
-        StructField("registered_date", StringType(), False),
-        StructField("phone", StringType(), False),
         StructField("picture", StringType(), False)
     ])
 
-    return spark_df \
+def process_stream(kafka_df, schema: StructType, spring_connector: SpringBootConnector):
+    """Traite le stream et envoie les données avec gestion des erreurs"""
+    transactions_df = kafka_df \
         .selectExpr("CAST(value AS STRING)") \
         .select(from_json(col("value"), schema).alias("data")) \
         .select("data.*")
-
-if __name__ == "__main__":
-    # 1. Connexion Spark
-    spark_conn = create_spark_connection()
-    if not spark_conn:
-        exit(1)
-
-    # 2. Connexion Kafka
-    spark_df = connect_to_kafka(spark_conn)
-    if not spark_df:
-        exit(1)
-
-    # 3. Préparation des données
-    selection_df = create_selection_df(spark_df)
     
-    # 4. Connexion Cassandra
-    cass_session = create_cassandra_connection()
-    if not cass_session:
-        exit(1)
-
-    # 5. Initialisation de la base
-    try:
-        create_keyspace(cass_session)
-        create_table(cass_session)
-    except Exception as e:
-        logging.error(f"Initialisation Cassandra échouée: {e}")
-        exit(1)
-
-    # 6. Écriture du stream
-    logging.info("Démarrage du traitement stream...")
-    query = selection_df.writeStream \
-        .format("org.apache.spark.sql.cassandra") \
+    def process_batch(df, batch_id):
+        try:
+            if df.rdd.isEmpty():
+                logger.info("Batch vide reçu")
+                return
+                
+            records = [row.asDict() for row in df.collect()]
+            logger.info(f"Traitement du batch {batch_id} avec {len(records)} transactions")
+            
+            if not spring_connector.send_transactions(records):
+                logger.warning(f"Échec partiel pour le batch {batch_id}")
+                
+        except Exception as e:
+            logger.error(f"Erreur lors du traitement du batch {batch_id}: {str(e)}", exc_info=True)
+    
+    return transactions_df.writeStream \
+        .foreachBatch(process_batch) \
         .option("checkpointLocation", "/tmp/checkpoint") \
-        .option("keyspace", "spark_streams") \
-        .option("table", "created_users") \
         .start()
 
-    query.awaitTermination()
+def main():
+    """Point d'entrée principal avec gestion améliorée des erreurs"""
+    # Configuration
+    KAFKA_CONFIG = {
+        "bootstrap_servers": "localhost:9092",
+        "topic": "bank_transactions"
+    }
+    
+    SPRING_CONFIG = {
+        "url": "http://localhost:8087/api/transactions"  # For POSTing transactions
+    }
+    
+    spark = None
+    try:
+        # Vérification de l'API Spring Boot avant de démarrer
+        try:
+            # Use direct actuator health endpoint instead of modifying transactions URL
+            health_url = "http://localhost:8087/actuator/health"
+            test_response = requests.get(health_url, timeout=5)
+            if test_response.status_code != 200:
+                logger.error("Spring Boot API n'est pas disponible")
+                return
+        except Exception as e:
+            logger.error(f"Impossible de se connecter à Spring Boot: {str(e)}")
+            return
+
+        # Rest of your main() remains the same...
+        spark = create_spark_connection()
+        if not spark:
+            logger.error("Arrêt de l'application - Impossible de créer la session Spark")
+            return
+        
+        spring_connector = SpringBootConnector(SPRING_CONFIG["url"])
+        
+        # Stream Kafka
+        kafka_df = get_kafka_stream(spark, KAFKA_CONFIG["bootstrap_servers"], KAFKA_CONFIG["topic"])
+        
+        # Traitement
+        query = process_stream(
+            kafka_df,
+            get_transaction_schema(),
+            spring_connector
+        )
+        
+        logger.info("Démarrage du traitement du stream...")
+        query.awaitTermination()
+        
+    except KeyboardInterrupt:
+        logger.info("Arrêt demandé par l'utilisateur")
+    except Exception as e:
+        logger.error(f"Échec critique de l'application: {str(e)}", exc_info=True)
+    finally:
+        if spark is not None:
+            try:
+                spark.stop()
+                logger.info("Session Spark arrêtée avec succès")
+            except Exception as e:
+                logger.error(f"Erreur lors de l'arrêt de Spark: {str(e)}")
+        logger.info("Application terminée")
+if __name__ == "__main__":
+    main()
